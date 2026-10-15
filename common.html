@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Entra FIDO2 Bulk Tool</title>
+<style>
+  table { width: 100%; max-width: 100%; }
+  th, td { overflow-wrap: anywhere; word-break: break-word; vertical-align: top; }
+</style>
+</head>
+<body>
+
+<div id="userBox" style="position:fixed; top:5px; right:10px;"></div>
+
+<div id="loginDiv" hidden>
+  <button id="loginBtn">Login with Microsoft</button>
+</div>
+
+<div id="errorDiv" style="color:red"></div>
+
+<div id="appDiv" hidden>
+  <input type="file" id="csvFile" accept=".csv" hidden>
+  <button id="entraBtn">Get from Entra</button>
+  <button id="uploadBtn">Upload CSV</button>
+  <button id="processBtn" hidden>Process CSV</button>
+  <button id="submitBtn" hidden>Submit CSV</button>
+  <button id="downloadBtn" hidden>Download CSV</button>
+  <div id="info"></div>
+  <table id="csvTable" border="1"></table>
+</div>
+
+<script>
+const CLIENT_ID = "XXXXX";
+// Work/school accounts of any tenant: "organizations".
+// Personal account that owns a test tenant: replace "organizations" with the tenant ID or domain.
+const AUTHORITY = "https://login.microsoftonline.com/organizations";
+
+const GRAPH = "https://graph.microsoft.com/beta";
+const SCOPES = "openid profile https://graph.microsoft.com/User.Read https://graph.microsoft.com/User.Read.All https://graph.microsoft.com/UserAuthenticationMethod.ReadWrite.All";
+const REDIRECT_URI = location.origin + location.pathname;
+const TIMEOUT_MINUTES = 43200; // 30 days (maximum allowed)
+const RP_ID = "login.microsoft.com";
+
+let accessToken = null;
+let headers = [];
+let rows = [];      // array of objects keyed by header
+let mode = null;    // "process" | "submit"
+const SEL = Symbol("sel"); // per-row "selected" flag, never written to the CSV
+let locked = false;
+
+const $ = id => document.getElementById(id);
+
+// ---------- PKCE helpers ----------
+function b64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function randomString(n = 64) {
+  const a = new Uint8Array(n);
+  crypto.getRandomValues(a);
+  return b64url(a).slice(0, n);
+}
+async function sha256(s) {
+  return crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+}
+
+// ---------- Login ----------
+$("loginBtn").onclick = async () => {
+  const verifier = randomString(64);
+  const state = randomString(16);
+  sessionStorage.setItem("verifier", verifier);
+  sessionStorage.setItem("state", state);
+
+  const challenge = b64url(await sha256(verifier));
+  location.href = `${AUTHORITY}/oauth2/v2.0/authorize?` +
+    new URLSearchParams({
+      client_id: CLIENT_ID,
+      response_type: "code",
+      redirect_uri: REDIRECT_URI,
+      response_mode: "query",
+      scope: SCOPES,
+      state: state,
+      code_challenge: challenge,
+      code_challenge_method: "S256"
+    });
+};
+
+async function exchangeCode(code) {
+  const verifier = sessionStorage.getItem("verifier");
+  const res = await fetch(`${AUTHORITY}/oauth2/v2.0/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: CLIENT_ID,
+      grant_type: "authorization_code",
+      code: code,
+      redirect_uri: REDIRECT_URI,
+      code_verifier: verifier,
+      scope: SCOPES
+    })
+  });
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.error_description || j.error || "Token exchange failed");
+  return j;
+}
+
+async function init() {
+  const params = new URLSearchParams(location.search);
+
+  if (params.get("error")) {
+    $("errorDiv").textContent = params.get("error") + ": " + (params.get("error_description") || "");
+    $("loginDiv").hidden = false;
+    return;
+  }
+
+  const code = params.get("code");
+  if (!code) { $("loginDiv").hidden = false; return; }
+
+  try {
+    if (params.get("state") !== sessionStorage.getItem("state")) throw new Error("State mismatch");
+    const tokens = await exchangeCode(code);
+    accessToken = tokens.access_token;
+    history.replaceState({}, "", REDIRECT_URI); // code is single use, remove from URL
+
+    const me = await graph("GET", "/me");
+    $("userBox").textContent = me.displayName || me.userPrincipalName;
+    $("appDiv").hidden = false;
+  } catch (e) {
+    $("errorDiv").textContent = "Login failed: " + e.message;
+    $("loginDiv").hidden = false;
+  }
+}
+
+// ---------- Graph helper ----------
+async function graph(method, path, body) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const res = await fetch(path.startsWith("http") ? path : GRAPH + path, {
+      method,
+      headers: {
+        "Authorization": "Bearer " + accessToken,
+        "Content-Type": "application/json"
+      },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    if (res.status === 429) {
+      const wait = parseInt(res.headers.get("Retry-After") || "5", 10);
+      await new Promise(r => setTimeout(r, wait * 1000));
+      continue;
+    }
+    const text = await res.text();
+    let j = null;
+    try { j = text ? JSON.parse(text) : null; } catch (_) {}
+    if (!res.ok) {
+      const msg = j && j.error ? `${j.error.code}: ${j.error.message}` : text;
+      throw new Error(`HTTP ${res.status} ${msg}`);
+    }
+    return j;
+  }
+  throw new Error("Throttled too many times");
+}
+
+// ---------- CSV ----------
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const out = []; let row = [], f = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; }
+      else f += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { row.push(f); f = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(f); out.push(row); row = []; f = "";
+    } else f += c;
+  }
+  if (f !== "" || row.length) { row.push(f); out.push(row); }
+  return out.filter(r => !(r.length === 1 && r[0] === ""));
+}
+
+function toCSV() {
+  const esc = v => {
+    v = v == null ? "" : String(v);
+    return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  };
+  return [headers.map(esc).join(",")]
+    .concat(rows.map(r => headers.map(h => esc(r[h])).join(",")))
+    .join("\r\n");
+}
+
+const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+function findCol(name) { return headers.find(h => norm(h) === norm(name)); }
+function findPrincipalCol() {
+  return headers.find(h => ["userprincipal", "userprincipalname"].includes(norm(h)));
+}
+function ensureCol(name) {
+  let c = findCol(name);
+  if (!c) { headers.push(name); c = name; rows.forEach(r => r[c] = ""); }
+  moveStatusLast();
+  return c;
+}
+function moveStatusLast() {
+  const s = findCol("status");
+  if (s) { headers.splice(headers.indexOf(s), 1); headers.push(s); }
+}
+
+function renderTable() {
+  const t = $("csvTable");
+  t.innerHTML = "";
+  const hr = t.createTHead().insertRow();
+  if (!locked) {
+    const th = document.createElement("th");
+    const all = document.createElement("input");
+    all.type = "checkbox";
+    all.checked = rows.every(r => r[SEL]);
+    all.onchange = () => { rows.forEach(r => r[SEL] = all.checked); renderTable(); };
+    th.appendChild(all);
+    hr.appendChild(th);
+  }
+  headers.forEach(h => { const th = document.createElement("th"); th.textContent = h; hr.appendChild(th); });
+
+  const tb = t.createTBody();
+  rows.forEach(r => {
+    const tr = tb.insertRow();
+    if (!locked) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = r[SEL];
+      cb.onchange = () => { r[SEL] = cb.checked; renderTable(); };
+      tr.insertCell().appendChild(cb);
+    }
+    headers.forEach(h => {
+      const td = tr.insertCell();
+      td.textContent = r[h] == null ? "" : r[h];
+      if (!locked) {
+        td.contentEditable = "true";
+        td.oninput = () => { r[h] = td.textContent; };
+      }
+    });
+  });
+}
+
+// ---------- Get users from Entra ----------
+$("entraBtn").onclick = async () => {
+  $("entraBtn").disabled = true;
+  $("errorDiv").textContent = "";
+  locked = false;
+  ["processBtn", "submitBtn", "downloadBtn"].forEach(id => $(id).hidden = true);
+  try {
+    const addr = ["streetAddress", "city", "state", "postalCode", "country"];
+    let url = "/users?$top=999&$select=" + ["userPrincipalName", "displayName", ...addr].join(",");
+    const list = [];
+    while (url) {
+      $("info").textContent = "Loading users... " + list.length;
+      const res = await graph("GET", url);
+      list.push(...(res.value || []));
+      url = res["@odata.nextLink"] || null;
+    }
+    if (!list.length) throw new Error("No users returned");
+
+    headers = ["user principal", "name", ...addr, "shipping address"];
+    rows = list.map(u => {
+      const o = {};
+      o[SEL] = true;
+      o["user principal"] = u.userPrincipalName || "";
+      o["name"] = u.displayName || "";
+      addr.forEach(f => o[f] = u[f] || "");
+      o["shipping address"] = addr.map(f => o[f]).filter(Boolean).join(", ");
+      return o;
+    });
+
+    mode = "process";
+    ensureCol("challenge");
+    $("processBtn").hidden = false;
+    $("info").textContent = list.length + " users loaded from Entra: ready to generate creation options.";
+    renderTable();
+  } catch (e) {
+    $("errorDiv").textContent = "Could not load users: " + e.message;
+    $("info").textContent = "";
+  }
+  $("entraBtn").disabled = false;
+};
+
+// ---------- Upload CSV ----------
+$("uploadBtn").onclick = () => $("csvFile").click();
+
+$("csvFile").onchange = async e => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  $("errorDiv").textContent = "";
+  locked = false;
+  ["processBtn", "submitBtn", "downloadBtn"].forEach(id => $(id).hidden = true);
+
+  const data = parseCSV(await file.text());
+  if (data.length < 1) { $("errorDiv").textContent = "Empty CSV"; return; }
+
+  headers = data[0].map(h => h.trim());
+  rows = data.slice(1).map(cells => {
+    const o = {};
+    o[SEL] = true;
+    headers.forEach((h, i) => o[h] = cells[i] !== undefined ? cells[i] : "");
+    return o;
+  });
+
+  if (!findPrincipalCol()) {
+    $("errorDiv").textContent = "CSV must contain a 'user principal' column";
+    headers = []; rows = []; renderTable(); return;
+  }
+  ensureCol("shipping address");
+
+  const ao = findCol("attestationObject");
+  const hasAttestation = ao && rows.some(r => (r[ao] || "").trim() !== "");
+
+  if (hasAttestation && (!findCol("credential_id") || !findCol("clientDataJson"))) {
+    $("errorDiv").textContent = "attestationObject is present, so credential_id and clientDataJson columns are required";
+    headers = []; rows = []; renderTable(); return;
+  }
+
+  if (hasAttestation) {
+    mode = "submit";
+    $("submitBtn").hidden = false;
+    $("info").textContent = "Attestation data found: ready to submit.";
+  } else {
+    mode = "process";
+    ensureCol("challenge");
+    $("processBtn").hidden = false;
+    $("info").textContent = "No attestation data: ready to generate creation options.";
+  }
+  renderTable();
+};
+
+// Drops unchecked rows and makes the table read-only
+function lockAndFilter() {
+  const kept = rows.filter(r => r[SEL]);
+  if (!kept.length) { $("errorDiv").textContent = "Select at least one row"; return false; }
+  $("errorDiv").textContent = "";
+  rows = kept;
+  locked = true;
+  renderTable();
+  return true;
+}
+
+// ---------- Process (creation options) ----------
+$("processBtn").onclick = async () => {
+  if (!lockAndFilter()) return;
+  $("processBtn").disabled = true;
+  const pCol = findPrincipalCol();
+  const cCol = ensureCol("challenge");
+  const uCol = ensureCol("user_id");
+  const sCol = ensureCol("status");
+  const rCol = ensureCol("rp_id");
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    r[rCol] = RP_ID;
+    const upn = (r[pCol] || "").trim();
+    if (!upn) { r[sCol] = "Error: empty user principal"; renderTable(); continue; }
+    r[sCol] = "Working...";
+    renderTable();
+    try {
+      const res = await graph("GET",
+        `/users/${encodeURIComponent(upn)}/authentication/fido2Methods/creationOptions(challengeTimeoutInMinutes=${TIMEOUT_MINUTES})`);
+      const pk = res.publicKey || res;
+      if (!pk.challenge || !pk.user || !pk.user.id) throw new Error("Unexpected response shape");
+      r[cCol] = pk.challenge;
+      r[uCol] = pk.user.id;
+      r[sCol] = "Creation options OK";
+    } catch (e) {
+      r[sCol] = "Error: " + e.message;
+    }
+    renderTable();
+  }
+  $("processBtn").disabled = false;
+  $("downloadBtn").hidden = false;
+};
+
+// ---------- Submit (register keys) ----------
+function buildCredential(r, idCol, cdCol, aoCol) {
+  const id = (r[idCol] || "").trim();
+  const cd = (r[cdCol] || "").trim();
+  const ao = (r[aoCol] || "").trim();
+  if (!id || !cd || !ao) throw new Error("credential_id, clientDataJson and attestationObject are all required");
+  return { id, response: { clientDataJSON: cd, attestationObject: ao } };
+}
+
+$("submitBtn").onclick = async () => {
+  if (!lockAndFilter()) return;
+  $("submitBtn").disabled = true;
+  const pCol = findPrincipalCol();
+  const idCol = findCol("credential_id");
+  const cdCol = findCol("clientDataJson");
+  const aoCol = findCol("attestationObject");
+  const dCol = findCol("display_name");
+  const sCol = ensureCol("status");
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const upn = (r[pCol] || "").trim();
+    if (!upn) { r[sCol] = "Skipped: missing principal"; renderTable(); continue; }
+    r[sCol] = "Working...";
+    renderTable();
+    try {
+      const displayName = (dCol && (r[dCol] || "").trim()) || "FIDO Key";
+      const res = await graph("POST",
+        `/users/${encodeURIComponent(upn)}/authentication/fido2Methods`,
+        { displayName, publicKeyCredential: buildCredential(r, idCol, cdCol, aoCol) });
+      r[sCol] = "Success" + (res && res.id ? " (method id " + res.id + ")" : "");
+    } catch (e) {
+      r[sCol] = "Error: " + e.message;
+    }
+    renderTable();
+  }
+  $("submitBtn").disabled = false;
+  $("downloadBtn").hidden = false;
+};
+
+// ---------- Download ----------
+$("downloadBtn").onclick = () => {
+  const blob = new Blob([toCSV()], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (mode === "submit" ? "submitted" : "processed") + ".csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+init();
+</script>
+</body>
+</html>
