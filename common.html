@@ -212,6 +212,13 @@ function moveStatusLast() {
   const s = findCol("status");
   if (s) { headers.splice(headers.indexOf(s), 1); headers.push(s); }
 }
+function nowWithTz() {
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  const off = -d.getTimezoneOffset(), sign = off >= 0 ? "+" : "-", a = Math.abs(off);
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T" +
+    p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()) +
+    sign + p(Math.floor(a / 60)) + ":" + p(a % 60);
+}
 const isMachineCol = h => MACHINE_COLS.includes(norm(h));
 
 function renderTable() {
@@ -286,6 +293,8 @@ $("entraBtn").onclick = async () => {
       o["shipping address"] = addr.map(f => o[f]).filter(Boolean).join(", ");
       return o;
     });
+    // hide columns that are empty for every user (user principal and shipping address always stay)
+    headers = headers.filter(h => h === "user principal" || h === "shipping address" || rows.some(r => r[h]));
 
     mode = "process";
     ensureCol("challenge");
@@ -368,6 +377,7 @@ $("processBtn").onclick = async () => {
   const uCol = ensureCol("user_id");
   const sCol = ensureCol("status");
   const rCol = ensureCol("rp_id");
+  const tCol = ensureCol("timestamp");
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
@@ -388,6 +398,7 @@ $("processBtn").onclick = async () => {
       if (!pk.challenge || !pk.user || !pk.user.id) throw new Error("Unexpected response shape");
       r[cCol] = pk.challenge;
       r[uCol] = pk.user.id;
+      r[tCol] = nowWithTz();
       r[sCol] = "Creation options OK";
     } catch (e) {
       r[sCol] = "Error: " + e.message;
