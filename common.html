@@ -6,6 +6,8 @@
 <style>
   table { width: 100%; max-width: 100%; }
   th, td { overflow-wrap: anywhere; word-break: break-word; vertical-align: top; }
+  /* machine-generated fields: fixed width, one line, clipped with "..." (display only) */
+  .mono { max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -41,7 +43,12 @@ const REDIRECT_URI = location.origin + location.pathname;
 const TIMEOUT_MINUTES = 43200; // 30 days (maximum allowed)
 const RP_ID = "login.microsoft.com";
 
+// Columns shown clipped to a fixed width (normalized names, see norm())
+const MACHINE_COLS = ["challenge", "userid", "userhandle", "credentialid",
+                      "clientdatajson", "attestationobject", "attestation"];
+
 let accessToken = null;
+let myUpn = "";
 let headers = [];
 let rows = [];      // array of objects keyed by header
 let mode = null;    // "process" | "submit"
@@ -123,6 +130,7 @@ async function init() {
     history.replaceState({}, "", REDIRECT_URI); // code is single use, remove from URL
 
     const me = await graph("GET", "/me");
+    myUpn = (me.userPrincipalName || "").toLowerCase();
     $("userBox").textContent = me.displayName || me.userPrincipalName;
     $("appDiv").hidden = false;
   } catch (e) {
@@ -204,6 +212,7 @@ function moveStatusLast() {
   const s = findCol("status");
   if (s) { headers.splice(headers.indexOf(s), 1); headers.push(s); }
 }
+const isMachineCol = h => MACHINE_COLS.includes(norm(h));
 
 function renderTable() {
   const t = $("csvTable");
@@ -232,10 +241,18 @@ function renderTable() {
     }
     headers.forEach(h => {
       const td = tr.insertCell();
-      td.textContent = r[h] == null ? "" : r[h];
+      const v = r[h] == null ? "" : String(r[h]);
+      let el = td;
+      if (isMachineCol(h)) {            // clipped display, full value kept in data + tooltip
+        el = document.createElement("div");
+        el.className = "mono";
+        el.title = v;
+        td.appendChild(el);
+      }
+      el.textContent = v;
       if (!locked) {
-        td.contentEditable = "true";
-        td.oninput = () => { r[h] = td.textContent; };
+        el.contentEditable = "true";
+        el.oninput = () => { r[h] = el.textContent; };
       }
     });
   });
@@ -357,6 +374,11 @@ $("processBtn").onclick = async () => {
     r[rCol] = RP_ID;
     const upn = (r[pCol] || "").trim();
     if (!upn) { r[sCol] = "Error: empty user principal"; renderTable(); continue; }
+    if (upn.toLowerCase() === myUpn) {
+      r[sCol] = "Skipped: signed-in user (creationOptions doesn't support self-service)";
+      renderTable();
+      continue;
+    }
     r[sCol] = "Working...";
     renderTable();
     try {
