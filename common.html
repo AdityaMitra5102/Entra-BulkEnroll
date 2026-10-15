@@ -257,7 +257,8 @@ function renderTable() {
         td.appendChild(el);
       }
       el.textContent = v;
-      if (!locked) {
+      // shipping address stays editable even after the table is locked
+      if (!locked || norm(h) === "shippingaddress") {
         el.contentEditable = "true";
         el.oninput = () => { r[h] = el.textContent; };
       }
@@ -357,7 +358,7 @@ $("csvFile").onchange = async e => {
   renderTable();
 };
 
-// Drops unchecked rows and makes the table read-only
+// Drops unchecked rows and makes the table read-only (except shipping address)
 function lockAndFilter() {
   const kept = rows.filter(r => r[SEL]);
   if (!kept.length) { $("errorDiv").textContent = "Select at least one row"; return false; }
