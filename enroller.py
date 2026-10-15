@@ -10,6 +10,7 @@ from fido2.webauthn import PublicKeyCredentialCreationOptions
 from fido2.client import DefaultClientDataCollector
 from nitrokey.nk3 import NK3
 from nitrokey.nkpk import NKPK
+from nitrokey.trussed._connection.ctaphid import CtapHidConnection
 
 INPUT_CSV = sys.argv[1] if len(sys.argv) > 1 else "processed.csv"
 OUTPUT_CSV = "output.csv"
@@ -19,10 +20,11 @@ ORIGIN = "https://login.microsoft.com"  # must be valid for the rp_id in the CSV
 def get_display_name(client):
     device = client._backend.ctap2.device
     try:
-        name = f"NK3 {str(NK3(device).uuid())[:5]}"
-    except Exception:
+        name = f"NK3 {str(NK3(CtapHidConnection(device)).uuid())[:5]}"
+    except Exception as e:
+        print(e)
         try:
-            name = f"NKPK {str(NKPK(device).uuid())[:5]}"
+            name = f"NKPK {str(NKPK(CtapHidConnection(device)).uuid())[:5]}"
         except Exception:
             name = "FIDO Key"
         
