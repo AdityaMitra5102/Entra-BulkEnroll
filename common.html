@@ -362,7 +362,8 @@ $("shareBtn").onclick = async () => {
 
   let text = null, problem = "";
   try {
-    const res = await fetch(CLOUD + encodeURIComponent(shareId) + "/output.csv");
+    // ?t=<now> makes every request unique so a stale cached copy is never used
+    const res = await fetch(CLOUD + encodeURIComponent(shareId) + "/output.csv?t=" + Date.now());
     if (res.ok) text = await res.text();
     else if (res.status !== 404) problem = "Could not fetch output.csv: HTTP " + res.status + ". Continuing without it.";
   } catch (e) {
