@@ -3,11 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Entra FIDO2 Bulk Tool</title>
+<title>Nitrokey Pre-enrollment</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 2.5em 1em 1em; }
-  #userBox { background: Canvas; padding: 0 .4em; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  [hidden] { display: none !important; }  /* keeps hidden working on the flex containers below */
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 0 1em 1em; }
+
+  /* banner (fixed light colours so the logo stays visible in dark mode) */
+  .banner { display: flex; align-items: center; gap: .8em; margin: 0 -1em 1em; padding: .6em 1em;
+            background: #fff; color: #222; border-bottom: 1px solid #ddd; }
+  .banner img { height: 2em; width: auto; }
+  .banner h1 { flex: 1; margin: 0; font-size: 1.2em; font-weight: 600; }
+  #userBox { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* centered login / share ID screens */
+  .center { display: flex; justify-content: center; align-items: center; min-height: 60vh; }
+  .card { width: 100%; max-width: 22em; box-sizing: border-box; padding: 1.5em; text-align: center;
+          border: 1px solid #888; border-radius: 10px; background: Canvas; box-shadow: 0 4px 16px rgba(0,0,0,.15); }
+  .card h3 { margin-top: 0; }
+  .card input { width: 100%; box-sizing: border-box; font: inherit; padding: .5em .7em; margin-bottom: 1em; }
+  .card button { width: 100%; margin: 0; }
 
   /* buttons */
   button {
@@ -27,12 +42,16 @@
   button:disabled { opacity: .5; cursor: not-allowed; }
 
   /* main actions: filled */
-  #loginBtn, #shareBtn, #processBtn, #submitBtn {
+  #shareBtn, #processBtn, #submitBtn {
     background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600;
   }
-  #loginBtn { padding: .7em 1.6em; }
 
-  /* download / upload to cloud: green */
+  /* Microsoft sign-in button: white, grey text, 21px logo */
+  #loginBtn { display: inline-flex; align-items: center; gap: 12px; height: 41px; padding: 0 12px;
+              background: #fff; color: #5e5e5e; border: 1px solid #8c8c8c; font-size: 15px; font-weight: 600; }
+  #loginBtn img { width: 21px; height: 21px; flex: none; object-fit: contain; }
+
+  /* send to Nitrokey: green */
   #downloadBtn { background: #16a34a; border-color: #16a34a; color: #fff; font-weight: 600; }
 
   progress { width: 20em; max-width: 60vw; vertical-align: middle; }
@@ -51,16 +70,26 @@
 </head>
 <body>
 
-<div id="userBox" style="position:fixed; top:5px; right:10px;"></div>
+<header class="banner">
+  <img src="https://www.nitrokey.com/sites/all/themes/nitrokey/logo.svg" alt="Nitrokey">
+  <h1>Nitrokey Pre-enrollment</h1>
+  <div id="userBox"></div>
+</header>
 
-<div id="loginDiv" hidden>
-  <button id="loginBtn">Login with Microsoft</button>
+<div id="loginDiv" class="center" hidden>
+  <button id="loginBtn">
+    <img src="https://upload.wikimedia.org/wikipedia/commons/4/44/Microsoft_logo.svg" width="21" height="21" alt="">
+    <span>Login with Microsoft</span>
+  </button>
 </div>
 
-<div id="shareDiv" hidden>
-  Share ID: <input id="shareId" size="30">
-  <button id="shareBtn">Continue</button>
-  <div id="shareInfo"></div>
+<div id="shareDiv" class="center" hidden>
+  <div class="card">
+    <h3>Enter Share ID</h3>
+    <input id="shareId" placeholder="Share ID" autocomplete="off">
+    <button id="shareBtn">Continue</button>
+    <div id="shareInfo"></div>
+  </div>
 </div>
 
 <div id="errorDiv" style="color:red"></div>
@@ -71,7 +100,7 @@
   <button id="uploadBtn">Upload CSV</button>
   <button id="processBtn" hidden>Process CSV</button>
   <button id="submitBtn" hidden>Submit CSV</button>
-  <button id="downloadBtn" hidden>Download CSV</button>
+  <button id="downloadBtn" hidden>Send to Nitrokey</button>
   <div id="progressDiv" hidden>
     <progress id="progress" value="0" max="1"></progress>
     <span id="progressText"></span>
@@ -349,6 +378,7 @@ $("shareBtn").onclick = async () => {
   }
   if (problem) $("errorDiv").textContent = problem;
 };
+$("shareId").addEventListener("keydown", e => { if (e.key === "Enter") $("shareBtn").click(); });
 
 // ---------- Get users from Entra ----------
 $("entraBtn").onclick = async () => {
@@ -543,7 +573,7 @@ $("submitBtn").onclick = async () => {
   $("downloadBtn").hidden = false;
 };
 
-// ---------- Download / push to cloud ----------
+// ---------- Send to Nitrokey (cloud push) / local download ----------
 function downloadLocal() {
   const blob = new Blob([toCSV()], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
