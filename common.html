@@ -18,6 +18,12 @@
   <button id="loginBtn">Login with Microsoft</button>
 </div>
 
+<div id="shareDiv" hidden>
+  Share ID: <input id="shareId" size="30">
+  <button id="shareBtn">Continue</button>
+  <div id="shareInfo"></div>
+</div>
+
 <div id="errorDiv" style="color:red"></div>
 
 <div id="appDiv" hidden>
@@ -42,6 +48,7 @@ const SCOPES = "openid profile https://graph.microsoft.com/User.Read https://gra
 const REDIRECT_URI = location.origin + location.pathname;
 const TIMEOUT_MINUTES = 43200; // 30 days (maximum allowed)
 const RP_ID = "login.microsoft.com";
+const CLOUD = "https://cloud.nitrokey.com/public.php/dav/files/";
 
 // Columns shown clipped to a fixed width (normalized names, see norm())
 const MACHINE_COLS = ["challenge", "userid", "userhandle", "credentialid",
@@ -49,6 +56,7 @@ const MACHINE_COLS = ["challenge", "userid", "userhandle", "credentialid",
 
 let accessToken = null;
 let myUpn = "";
+let shareId = "";
 let headers = [];
 let rows = [];      // array of objects keyed by header
 let mode = null;    // "process" | "submit"
@@ -132,7 +140,7 @@ async function init() {
     const me = await graph("GET", "/me");
     myUpn = (me.userPrincipalName || "").toLowerCase();
     $("userBox").textContent = me.displayName || me.userPrincipalName;
-    $("appDiv").hidden = false;
+    $("shareDiv").hidden = false;
   } catch (e) {
     $("errorDiv").textContent = "Login failed: " + e.message;
     $("loginDiv").hidden = false;
@@ -266,6 +274,33 @@ function renderTable() {
   });
 }
 
+// ---------- Cloud (Nextcloud public share, WebDAV, anonymous) ----------
+$("shareBtn").onclick = async () => {
+  shareId = $("shareId").value.trim();
+  if (!shareId) { $("errorDiv").textContent = "Share ID required"; return; }
+  $("errorDiv").textContent = "";
+  $("shareBtn").disabled = true;
+  $("shareInfo").textContent = "Looking for output.csv...";
+
+  let text = null, problem = "";
+  try {
+    const res = await fetch(CLOUD + encodeURIComponent(shareId) + "/output.csv");
+    if (res.ok) text = await res.text();
+    else if (res.status !== 404) problem = "Could not fetch output.csv: HTTP " + res.status + ". Continuing without it.";
+  } catch (e) {
+    problem = "Could not reach the cloud (" + e.message + "). Continuing without output.csv.";
+  }
+
+  $("shareDiv").hidden = true;
+  $("appDiv").hidden = false;
+  $("info").textContent = "No output.csv on the cloud: upload a CSV or get users from Entra.";
+  if (text !== null) {
+    loadCsvText(text);
+    if (headers.length) $("info").textContent += " (output.csv loaded from the cloud)";
+  }
+  if (problem) $("errorDiv").textContent = problem;
+};
+
 // ---------- Get users from Entra ----------
 $("entraBtn").onclick = async () => {
   $("entraBtn").disabled = true;
@@ -316,11 +351,16 @@ $("csvFile").onchange = async e => {
   const file = e.target.files[0];
   e.target.value = "";
   if (!file) return;
+  loadCsvText(await file.text());
+};
+
+// Shared by the file picker and the cloud download
+function loadCsvText(text) {
   $("errorDiv").textContent = "";
   locked = false;
   ["processBtn", "submitBtn", "downloadBtn"].forEach(id => $(id).hidden = true);
 
-  const data = parseCSV(await file.text());
+  const data = parseCSV(text);
   if (data.length < 1) { $("errorDiv").textContent = "Empty CSV"; return; }
 
   headers = data[0].map(h => h.trim());
@@ -356,7 +396,7 @@ $("csvFile").onchange = async e => {
     $("info").textContent = "No attestation data: ready to generate creation options.";
   }
   renderTable();
-};
+}
 
 // Drops unchecked rows and makes the table read-only (except shipping address)
 function lockAndFilter() {
@@ -450,14 +490,32 @@ $("submitBtn").onclick = async () => {
   $("downloadBtn").hidden = false;
 };
 
-// ---------- Download ----------
-$("downloadBtn").onclick = () => {
+// ---------- Download / push to cloud ----------
+function downloadLocal() {
   const blob = new Blob([toCSV()], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = (mode === "submit" ? "submitted" : "processed") + ".csv";
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+$("downloadBtn").onclick = async () => {
+  $("downloadBtn").disabled = true;
+  try {
+    const res = await fetch(CLOUD + encodeURIComponent(shareId) + "/processed.csv", {
+      method: "PUT",
+      headers: { "Content-Type": "text/csv;charset=utf-8" },
+      body: toCSV()
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    $("errorDiv").textContent = "";
+    $("info").textContent = "processed.csv uploaded to the cloud.";
+  } catch (e) {
+    $("errorDiv").textContent = "Upload failed (" + e.message + "). Saved a local copy instead.";
+    downloadLocal();
+  }
+  $("downloadBtn").disabled = false;
 };
 
 init();
