@@ -14,7 +14,9 @@
             background: #fff; color: #222; border-bottom: 1px solid #ddd; }
   .banner img { height: 2em; width: auto; }
   .banner h1 { flex: 1; margin: 0; font-size: 1.2em; font-weight: 600; }
-  #userBox { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #userBox { max-width: 40vw; text-align: right; font-size: .9em; line-height: 1.3; }
+  #userBox div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shareLabel { opacity: .7; font-size: .85em; }
 
   /* centered login / share ID screens */
   .center { display: flex; justify-content: center; align-items: center; min-height: 60vh; }
@@ -73,7 +75,7 @@
 <header class="banner">
   <img src="https://www.nitrokey.com/sites/all/themes/nitrokey/logo.svg" alt="Nitrokey">
   <h1>Nitrokey Pre-enrollment</h1>
-  <div id="userBox"></div>
+  <div id="userBox"><div id="userName"></div><div id="shareLabel"></div></div>
 </header>
 
 <div id="loginDiv" class="center" hidden>
@@ -211,7 +213,7 @@ async function init() {
 
     const me = await graph("GET", "/me");
     myUpn = (me.userPrincipalName || "").toLowerCase();
-    $("userBox").textContent = me.displayName || me.userPrincipalName;
+    $("userName").textContent = me.displayName || me.userPrincipalName;
     $("shareDiv").hidden = false;
   } catch (e) {
     $("errorDiv").textContent = "Login failed: " + e.message;
@@ -352,10 +354,28 @@ function renderTable() {
   });
 }
 
+const SHARE_HOSTS = ["cloud.nitrokey.com", "nkproxy.adityaarghya0.workers.dev"];
+
+// Accepts a bare share ID or a share link. Returns the ID, or null if the link is from another host.
+function parseShareId(input) {
+  input = input.trim();
+  if (!input.includes("/")) return input;   // bare ID, used as is
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? input : "https://" + input);
+    if (!SHARE_HOSTS.includes(u.hostname.toLowerCase())) return null;
+    const parts = u.pathname.split("/").filter(Boolean);
+    return parts.length ? decodeURIComponent(parts[parts.length - 1]) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // ---------- Cloud (Nextcloud public share via proxy, WebDAV, anonymous) ----------
 $("shareBtn").onclick = async () => {
-  shareId = $("shareId").value.trim();
-  if (!shareId) { $("errorDiv").textContent = "Share ID required"; return; }
+  shareId = parseShareId($("shareId").value);
+  if (!shareId) { $("errorDiv").textContent = "Enter a share ID or a link from cloud.nitrokey.com"; return; }
+  $("shareLabel").textContent = "Share: " + shareId;
+  $("shareLabel").title = shareId;
   $("errorDiv").textContent = "";
   $("shareBtn").disabled = true;
   $("shareInfo").textContent = "Looking for output.csv...";
