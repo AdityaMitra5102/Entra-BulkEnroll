@@ -1,7 +1,11 @@
 import csv
 import getpass
+import io
 import re
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from fido2.client import Fido2Client, UserInteraction
 from fido2.hid import CtapHidDevice
@@ -12,9 +16,35 @@ from nitrokey.nk3 import NK3
 from nitrokey.nkpk import NKPK
 from nitrokey.trussed._connection.ctaphid import CtapHidConnection
 
-INPUT_CSV = sys.argv[1] if len(sys.argv) > 1 else "processed.csv"
-OUTPUT_CSV = "output.csv"
+CLOUD = "https://nkproxy.adityaarghya0.workers.dev/public.php/dav/files/"
+INPUT_NAME = "processed.csv"
+OUTPUT_NAME = "output.csv"
 ORIGIN = "https://login.microsoft.com"  # must be valid for the rp_id in the CSV
+
+
+def cloud_url(share_id, name):
+    return CLOUD + urllib.parse.quote(share_id, safe="") + "/" + name
+
+
+def cloud_get(share_id, name):
+    req = urllib.request.Request(
+        cloud_url(share_id, name),
+        headers={"User-Agent": "nitrokey-preenrollment"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode("utf-8-sig")
+
+
+def cloud_put(share_id, name, text):
+    req = urllib.request.Request(
+        cloud_url(share_id, name),
+        data=text.encode("utf-8"),
+        method="PUT",
+        headers={"Content-Type": "text/csv;charset=utf-8",
+                 "User-Agent": "nitrokey-preenrollment"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.status
 
 
 def get_display_name(client):
@@ -27,7 +57,7 @@ def get_display_name(client):
             name = f"NKPK {str(NKPK(CtapHidConnection(device)).uuid())[:5]}"
         except Exception:
             name = "FIDO Key"
-        
+
     return name
 
 
@@ -97,10 +127,19 @@ def create_credential(client, upn, display_name, challenge, user_id, rp_id):
 
 
 def main():
-    with open(INPUT_CSV, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        headers = list(reader.fieldnames or [])
-        rows = list(reader)
+    share_id = input("Share ID: ").strip()
+    if not share_id:
+        sys.exit("Share ID required")
+    try:
+        text = cloud_get(share_id, INPUT_NAME)
+    except urllib.error.HTTPError as e:
+        sys.exit(f"Could not fetch {INPUT_NAME}: HTTP {e.code}" + (" (not found)" if e.code == 404 else ""))
+    except Exception as e:
+        sys.exit(f"Could not reach the cloud: {e}")
+
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    headers = list(reader.fieldnames or [])
+    rows = list(reader)
 
     pcol = find_col(headers, "user principal", "userprincipalname")
     ccol = find_col(headers, "challenge")
@@ -137,20 +176,19 @@ def main():
                 out[scol] = "Skipped: missing principal, challenge, user_id or rp_id"
                 print(out[scol])
                 continue
-                
-            client = get_client()
-
-            display_name = get_display_name(client)
-            out[dcol] = display_name
-            print(f"Display name: {display_name}")
-            input("Press Enter to continue...")
 
             try:
-                
-                out.update({k: v for k, v in zip(
-                    (idcol, cdcol, aocol),
-                    (lambda r: (r["credential_id"], r["clientDataJson"], r["attestationObject"]))(
-                        create_credential(client, upn, display_name, challenge, user_id, rp_id)))})
+                client = get_client()
+
+                display_name = get_display_name(client)
+                out[dcol] = display_name
+                print(f"Display name: {display_name}")
+                input("Press Enter to continue...")
+
+                result = create_credential(client, upn, display_name, challenge, user_id, rp_id)
+                out[idcol] = result["credential_id"]
+                out[cdcol] = result["clientDataJson"]
+                out[aocol] = result["attestationObject"]
                 out[scol] = "Credential created"
                 print("OK")
             except Exception as e:
@@ -162,11 +200,18 @@ def main():
     except KeyboardInterrupt:
         print("\nInterrupted, writing what has been collected so far.")
     finally:
-        with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=out_headers)
-            w.writeheader()
-            w.writerows(out_rows)
-        print(f"\nWrote {OUTPUT_CSV} ({len(out_rows)} rows)")
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=out_headers)
+        w.writeheader()
+        w.writerows(out_rows)
+        data = buf.getvalue()
+        try:
+            cloud_put(share_id, OUTPUT_NAME, data)
+            print(f"\nUploaded {OUTPUT_NAME} to the cloud ({len(out_rows)} rows)")
+        except Exception as e:
+            with open(OUTPUT_NAME, "w", newline="", encoding="utf-8") as f:
+                f.write(data)
+            print(f"\nUpload failed ({e}). Saved {OUTPUT_NAME} locally instead ({len(out_rows)} rows)")
 
 
 if __name__ == "__main__":
