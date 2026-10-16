@@ -125,9 +125,24 @@ def create_credential(client, upn, display_name, challenge, user_id, rp_id):
         "attestationObject": websafe_encode(bytes(att_obj)),
     }
 
+import re
 
+def get_nextcloud_share_id(user_input):
+    cleaned_input = user_input.strip()
+    
+    match = re.search(r"(?:/s/|^)([a-zA-Z0-9]+)/?$", cleaned_input)
+    
+    if match:
+        share_id = match.group(1)
+        print(f"Extracted Share ID: {share_id}")
+        return share_id
+    else:
+        print("Invalid share ID or URL format.")
+        return None
+        
 def main():
-    share_id = input("Share ID: ").strip()
+    share_id = input("Share ID: ")
+    share_id = get_nextcloud_share_id(share_id)
     if not share_id:
         sys.exit("Share ID required")
     try:
@@ -159,6 +174,7 @@ def main():
     cdcol = find_col(out_headers, "clientDataJson")
     aocol = find_col(out_headers, "attestationObject")
     scol = find_col(out_headers, "status")
+    namecol = find_col(out_headers, "name")
 
     out_rows = []
     total = len(rows)
@@ -170,6 +186,7 @@ def main():
             challenge = (row[ccol] or "").strip()
             user_id = (row[ucol] or "").strip()
             rp_id = (row[rcol] or "").strip()
+            passkey_name = (row[namecol] or upn).strip()
 
             print(f"\n[{i}/{total}] User principal: {upn}")
             if not (upn and challenge and user_id and rp_id):
@@ -182,10 +199,12 @@ def main():
 
                 display_name = get_display_name(client)
                 out[dcol] = display_name
+                print(f"Registering for: {passkey_name}")
+                print(f"User principal: {upn}")
                 print(f"Display name: {display_name}")
                 input("Press Enter to continue...")
 
-                result = create_credential(client, upn, display_name, challenge, user_id, rp_id)
+                result = create_credential(client, upn, passkey_name, challenge, user_id, rp_id)
                 out[idcol] = result["credential_id"]
                 out[cdcol] = result["clientDataJson"]
                 out[aocol] = result["attestationObject"]
