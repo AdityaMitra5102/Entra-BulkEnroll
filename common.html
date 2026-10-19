@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nitrokey Pre-enrollment</title>
+<title>Nitrokey Credential Provisioning</title>
 <style>
   :root { color-scheme: light dark; }
   [hidden] { display: none !important; }  /* keeps hidden working on the flex containers below */
@@ -68,13 +68,19 @@
 
   /* machine-generated fields: fixed width, one line, clipped with "..." (display only) */
   .mono { max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Security Key dropdowns */
+  td select, th select { width: 100%; font: inherit; }
+
+  /* busy cursor while something is running (overrides the button and cell cursors too) */
+  body.busy, body.busy * { cursor: progress !important; }
 </style>
 </head>
 <body>
 
 <header class="banner">
   <img src="https://www.nitrokey.com/sites/all/themes/nitrokey/logo.svg" alt="Nitrokey">
-  <h1>Nitrokey Pre-enrollment</h1>
+  <h1>Nitrokey Credential Provisioning</h1>
   <div id="userBox"><div id="userName"></div><div id="shareLabel"></div></div>
 </header>
 
@@ -205,6 +211,7 @@ async function init() {
   const code = params.get("code");
   if (!code) { $("loginDiv").hidden = false; return; }
 
+  setBusy(true);
   try {
     if (params.get("state") !== sessionStorage.getItem("state")) throw new Error("State mismatch");
     const tokens = await exchangeCode(code);
@@ -218,6 +225,8 @@ async function init() {
   } catch (e) {
     $("errorDiv").textContent = "Login failed: " + e.message;
     $("loginDiv").hidden = false;
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -307,7 +316,38 @@ function setProgress(done, total) {
   $("progress").value = done;
   $("progressText").textContent = done + " of " + total;
 }
+
+// Busy cursor: counts running tasks, so it only clears when the last one finishes
+let busyCount = 0;
+function setBusy(on) {
+  busyCount = Math.max(0, busyCount + (on ? 1 : -1));
+  document.body.classList.toggle("busy", busyCount > 0);
+}
+
 const isMachineCol = h => MACHINE_COLS.includes(norm(h));
+
+// ---------- Security Key column (process mode only) ----------
+const KEY_COL = "Security Key";
+const KEY_OPTIONS = ["Nitrokey 3A", "Nitrokey 3C", "Nitrokey 3A Mini", "Nitrokey Passkey"];
+const KEY_DEFAULT = KEY_OPTIONS[0];
+const isKeyCol = h => norm(h) === "securitykey";
+
+// Adds the column if missing; empty or unknown values become the default
+function ensureKeyCol() {
+  const c = ensureCol(KEY_COL);
+  rows.forEach(r => {
+    const v = (r[c] || "").trim().toLowerCase();
+    r[c] = KEY_OPTIONS.find(k => k.toLowerCase() === v) || KEY_DEFAULT;
+  });
+}
+
+function keySelect(value, isMaster) {
+  const s = document.createElement("select");
+  if (isMaster) s.add(new Option("Set all...", ""));
+  KEY_OPTIONS.forEach(k => s.add(new Option(k, k)));
+  s.value = value;
+  return s;
+}
 
 function renderTable() {
   const t = $("csvTable");
@@ -322,7 +362,21 @@ function renderTable() {
     th.appendChild(all);
     hr.appendChild(th);
   }
-  headers.forEach(h => { const th = document.createElement("th"); th.textContent = h; hr.appendChild(th); });
+  headers.forEach(h => {
+    const th = document.createElement("th");
+    th.textContent = h;
+    if (mode === "process" && isKeyCol(h) && !locked) {
+      th.appendChild(document.createElement("br"));
+      const master = keySelect("", true);
+      master.onchange = () => {
+        if (!master.value) return;
+        rows.forEach(r => r[h] = master.value);
+        renderTable();
+      };
+      th.appendChild(master);
+    }
+    hr.appendChild(th);
+  });
 
   const tb = t.createTBody();
   rows.forEach(r => {
@@ -336,6 +390,12 @@ function renderTable() {
     }
     headers.forEach(h => {
       const td = tr.insertCell();
+      if (mode === "process" && isKeyCol(h) && !locked) {
+        const s = keySelect(r[h], false);
+        s.onchange = () => { r[h] = s.value; };
+        td.appendChild(s);
+        return;
+      }
       const v = r[h] == null ? "" : String(r[h]);
       let el = td;
       if (isMachineCol(h)) {            // clipped display, full value kept in data + tooltip
@@ -379,6 +439,7 @@ $("shareBtn").onclick = async () => {
   $("errorDiv").textContent = "";
   $("shareBtn").disabled = true;
   $("shareInfo").textContent = "Looking for output.csv...";
+  setBusy(true);
 
   let text = null, problem = "";
   try {
@@ -398,11 +459,13 @@ $("shareBtn").onclick = async () => {
     if (headers.length) $("info").textContent += " (output.csv loaded from the cloud)";
   }
   if (problem) $("errorDiv").textContent = problem;
+  setBusy(false);
 };
 $("shareId").addEventListener("keydown", e => { if (e.key === "Enter") $("shareBtn").click(); });
 
 // ---------- Get users from Entra ----------
 $("entraBtn").onclick = async () => {
+  setBusy(true);
   $("entraBtn").disabled = true;
   $("errorDiv").textContent = "";
   locked = false;
@@ -433,6 +496,7 @@ $("entraBtn").onclick = async () => {
     headers = headers.filter(h => h === "user principal" || h === "shipping address" || rows.some(r => r[h]));
 
     mode = "process";
+    ensureKeyCol();
     ensureCol("challenge");
     $("processBtn").hidden = false;
     $("info").textContent = list.length + " users loaded from Entra: ready to generate creation options.";
@@ -442,6 +506,7 @@ $("entraBtn").onclick = async () => {
     $("info").textContent = "";
   }
   $("entraBtn").disabled = false;
+  setBusy(false);
 };
 
 // ---------- Upload CSV ----------
@@ -491,6 +556,7 @@ function loadCsvText(text) {
     $("info").textContent = "Attestation data found: ready to submit.";
   } else {
     mode = "process";
+    ensureKeyCol();
     ensureCol("challenge");
     $("processBtn").hidden = false;
     $("info").textContent = "No attestation data: ready to generate creation options.";
@@ -513,6 +579,7 @@ function lockAndFilter() {
 $("processBtn").onclick = async () => {
   if (!lockAndFilter()) return;
   $("processBtn").disabled = true;
+  setBusy(true);
   const pCol = findPrincipalCol();
   const cCol = ensureCol("challenge");
   const uCol = ensureCol("user_id");
@@ -548,6 +615,7 @@ $("processBtn").onclick = async () => {
     renderTable();
   }
   setProgress(rows.length, rows.length);
+  setBusy(false);
   $("processBtn").disabled = false;
   $("downloadBtn").hidden = false;
 };
@@ -564,6 +632,7 @@ function buildCredential(r, idCol, cdCol, aoCol) {
 $("submitBtn").onclick = async () => {
   if (!lockAndFilter()) return;
   $("submitBtn").disabled = true;
+  setBusy(true);
   const pCol = findPrincipalCol();
   const idCol = findCol("credential_id");
   const cdCol = findCol("clientDataJson");
@@ -590,6 +659,7 @@ $("submitBtn").onclick = async () => {
     renderTable();
   }
   setProgress(rows.length, rows.length);
+  setBusy(false);
   $("submitBtn").disabled = false;
   $("downloadBtn").hidden = false;
 };
@@ -607,6 +677,7 @@ function downloadLocal() {
 $("downloadBtn").onclick = async () => {
   if (mode === "submit") { downloadLocal(); return; }   // submit results are only saved locally
   $("downloadBtn").disabled = true;
+  setBusy(true);
   try {
     const res = await fetch(CLOUD + encodeURIComponent(shareId) + "/processed.csv", {
       method: "PUT",
@@ -620,6 +691,7 @@ $("downloadBtn").onclick = async () => {
     $("errorDiv").textContent = "Upload failed (" + e.message + "). Saved a local copy instead.";
     downloadLocal();
   }
+  setBusy(false);
   $("downloadBtn").disabled = false;
 };
 
