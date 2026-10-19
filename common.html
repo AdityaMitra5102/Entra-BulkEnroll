@@ -7,6 +7,7 @@
 <style>
   :root { color-scheme: light dark; }
   [hidden] { display: none !important; }  /* keeps hidden working on the flex containers below */
+  html { min-height: 100%; }
   body { font-family: system-ui, sans-serif; margin: 0; padding: 0 1em 1em; }
 
   /* banner (fixed light colours so the logo stays visible in dark mode) */
@@ -72,8 +73,8 @@
   /* Security Key dropdowns */
   td select, th select { width: 100%; font: inherit; }
 
-  /* busy cursor while something is running (overrides the button and cell cursors too) */
-  body.busy, body.busy * { cursor: progress !important; }
+  /* busy cursor over the whole window while something is running (set on <html>, overrides all other cursors) */
+  html.busy, html.busy * { cursor: wait !important; }
 </style>
 </head>
 <body>
@@ -321,7 +322,7 @@ function setProgress(done, total) {
 let busyCount = 0;
 function setBusy(on) {
   busyCount = Math.max(0, busyCount + (on ? 1 : -1));
-  document.body.classList.toggle("busy", busyCount > 0);
+  document.documentElement.classList.toggle("busy", busyCount > 0);
 }
 
 const isMachineCol = h => MACHINE_COLS.includes(norm(h));
