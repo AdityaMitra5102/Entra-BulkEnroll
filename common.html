@@ -498,7 +498,6 @@ $("entraBtn").onclick = async () => {
 
     mode = "process";
     ensureKeyCol();
-    ensureCol("challenge");
     $("processBtn").hidden = false;
     $("info").textContent = list.length + " users loaded from Entra: ready to generate creation options.";
     renderTable();
@@ -558,7 +557,6 @@ function loadCsvText(text) {
   } else {
     mode = "process";
     ensureKeyCol();
-    ensureCol("challenge");
     $("processBtn").hidden = false;
     $("info").textContent = "No attestation data: ready to generate creation options.";
   }
@@ -582,7 +580,7 @@ $("processBtn").onclick = async () => {
   $("processBtn").disabled = true;
   setBusy(true);
   const pCol = findPrincipalCol();
-  const cCol = ensureCol("challenge");
+  const cCol = ensureCol("challenge");   // created here, so it only appears once processing starts
   const uCol = ensureCol("user_id");
   const sCol = ensureCol("status");
   const rCol = ensureCol("rp_id");
