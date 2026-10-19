@@ -279,13 +279,14 @@ function parseCSV(text) {
   return out.filter(r => !(r.length === 1 && r[0] === ""));
 }
 
-function toCSV() {
+// Serializes the given rows (all rows by default)
+function toCSV(list = rows) {
   const esc = v => {
     v = v == null ? "" : String(v);
     return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
   return [headers.map(esc).join(",")]
-    .concat(rows.map(r => headers.map(h => esc(r[h])).join(",")))
+    .concat(list.map(r => headers.map(h => esc(r[h])).join(",")))
     .join("\r\n");
 }
 
@@ -664,8 +665,8 @@ $("submitBtn").onclick = async () => {
 };
 
 // ---------- Send to Nitrokey (cloud push) / local download ----------
-function downloadLocal() {
-  const blob = new Blob([toCSV()], { type: "text/csv;charset=utf-8" });
+function downloadLocal(list = rows) {
+  const blob = new Blob([toCSV(list)], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = (mode === "submit" ? "submitted" : "processed") + ".csv";
@@ -675,20 +676,31 @@ function downloadLocal() {
 
 $("downloadBtn").onclick = async () => {
   if (mode === "submit") { downloadLocal(); return; }   // submit results are only saved locally
+
+  // only rows that got a challenge are sent (skipped and failed rows are left out)
+  const cCol = findCol("challenge");
+  const send = rows.filter(r => cCol && (r[cCol] || "").trim() !== "");
+  const dropped = rows.length - send.length;
+  if (!send.length) {
+    $("errorDiv").textContent = "Nothing to send: no row has a challenge.";
+    return;
+  }
+
   $("downloadBtn").disabled = true;
   setBusy(true);
   try {
     const res = await fetch(CLOUD + encodeURIComponent(shareId) + "/processed.csv", {
       method: "PUT",
       headers: { "Content-Type": "text/csv;charset=utf-8" },
-      body: toCSV()
+      body: toCSV(send)
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
     $("errorDiv").textContent = "";
-    $("info").textContent = "processed.csv uploaded to the cloud.";
+    $("info").textContent = "processed.csv uploaded to the cloud: " + send.length + " rows sent" +
+      (dropped ? ", " + dropped + " left out (no challenge)." : ".");
   } catch (e) {
     $("errorDiv").textContent = "Upload failed (" + e.message + "). Saved a local copy instead.";
-    downloadLocal();
+    downloadLocal(send);
   }
   setBusy(false);
   $("downloadBtn").disabled = false;
