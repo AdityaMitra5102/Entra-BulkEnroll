@@ -75,6 +75,16 @@
 
   /* busy cursor over the whole window while something is running (set on <html>, overrides all other cursors) */
   html.busy, html.busy * { cursor: wait !important; }
+
+  /* Debug mode slider */
+  .debug { display: flex; align-items: center; gap: .5em; font-size: .85em; white-space: nowrap; cursor: pointer; user-select: none; }
+  .debug input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .debug .track { position: relative; width: 2.4em; height: 1.3em; background: #bbb; border-radius: 1em; transition: background .15s; }
+  .debug .track::after { content: ""; position: absolute; top: .15em; left: .15em; width: 1em; height: 1em;
+                         background: #fff; border-radius: 50%; transition: transform .15s; }
+  .debug input:checked + .track { background: #2563eb; }
+  .debug input:checked + .track::after { transform: translateX(1.1em); }
+  .debug input:focus-visible + .track { outline: 2px solid #2563eb; outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -82,6 +92,7 @@
 <header class="banner">
   <img src="https://www.nitrokey.com/sites/all/themes/nitrokey/logo.svg" alt="Nitrokey">
   <h1>Nitrokey Credential Provisioning</h1>
+  <label class="debug"><input type="checkbox" id="debugToggle"><span class="track"></span>Debug mode</label>
   <div id="userBox"><div id="userName"></div><div id="shareLabel"></div></div>
 </header>
 
@@ -362,6 +373,13 @@ function keySelect(value, isMaster) {
   return s;
 }
 
+// ---------- Debug mode: machine fields are hidden on screen unless it is on ----------
+// Only the display is affected: the columns stay in the data and in the downloaded/sent CSVs.
+const HIDDEN_COLS = ["challenge", "userid", "rpid", "credentialid", "clientdatajson", "attestationobject"];
+let debug = false;
+const visibleHeaders = () => debug ? headers : headers.filter(h => !HIDDEN_COLS.includes(norm(h)));
+$("debugToggle").onchange = e => { debug = e.target.checked; renderTable(); };
+
 function renderTable() {
   const t = $("csvTable");
   t.innerHTML = "";
@@ -375,7 +393,7 @@ function renderTable() {
     th.appendChild(all);
     hr.appendChild(th);
   }
-  headers.forEach(h => {
+  visibleHeaders().forEach(h => {
     const th = document.createElement("th");
     th.textContent = h;
     if (mode === "process" && isKeyCol(h) && !locked) {
@@ -401,7 +419,7 @@ function renderTable() {
       cb.onchange = () => { r[SEL] = cb.checked; renderTable(); };
       tr.insertCell().appendChild(cb);
     }
-    headers.forEach(h => {
+    visibleHeaders().forEach(h => {
       const td = tr.insertCell();
       if (mode === "process" && isKeyCol(h) && !locked) {
         const s = keySelect(r[h], false);
