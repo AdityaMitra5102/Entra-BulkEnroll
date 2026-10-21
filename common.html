@@ -687,17 +687,18 @@ $("submitBtn").onclick = async () => {
     setProgress(i, rows.length);
     const r = rows[i];
     const upn = (r[pCol] || "").trim();
-    if (!upn) { r[sCol] = "Skipped: missing principal"; renderTable(); continue; }
+    if (!upn) { r[sCol] = "Failed"; renderTable(); continue; }
     r[sCol] = "Working...";
     renderTable();
     try {
       const displayName = (dCol && (r[dCol] || "").trim()) || "FIDO Key";
-      const res = await graph("POST",
+      await graph("POST",
         `/users/${encodeURIComponent(upn)}/authentication/fido2Methods`,
         { displayName, publicKeyCredential: buildCredential(r, idCol, cdCol, aoCol) });
-      r[sCol] = "Success" + (res && res.id ? " (method id " + res.id + ")" : "");
+      r[sCol] = "Success";
     } catch (e) {
-      r[sCol] = "Error: " + e.message;
+      console.error("Submit failed for " + upn + ": " + e.message);   // details only in the browser console
+      r[sCol] = "Failed";
     }
     renderTable();
   }
@@ -705,7 +706,7 @@ $("submitBtn").onclick = async () => {
   setBusy(false);
   $("restartBtn").disabled = false;
   $("submitBtn").disabled = false;
-  $("downloadBtn").hidden = false;
+  // Send to Nitrokey is not offered in step 2
 };
 
 // ---------- Send to Nitrokey (cloud push) / local download ----------
@@ -719,7 +720,7 @@ function downloadLocal(list = rows) {
 }
 
 $("downloadBtn").onclick = async () => {
-  if (mode === "submit") { downloadLocal(); return; }   // submit results are only saved locally
+  if (mode === "submit") { downloadLocal(); return; }   // not reachable in step 2 (button is hidden there)
 
   // only rows that got a challenge are sent (skipped and failed rows are left out)
   const cCol = findCol("challenge");
