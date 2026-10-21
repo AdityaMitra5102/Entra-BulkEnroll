@@ -525,6 +525,7 @@ function loadCsvText(text) {
   $("errorDiv").textContent = "";
   locked = false;
   ["processBtn", "submitBtn", "downloadBtn", "progressDiv"].forEach(id => $(id).hidden = true);
+  ["entraBtn", "uploadBtn"].forEach(id => $(id).hidden = false);
 
   const data = parseCSV(text);
   if (data.length < 1) { $("errorDiv").textContent = "Empty CSV"; return; }
@@ -553,6 +554,7 @@ function loadCsvText(text) {
 
   if (hasAttestation) {
     mode = "submit";
+    ["entraBtn", "uploadBtn"].forEach(id => $(id).hidden = true);   // step 2: only Submit List is offered
     $("submitBtn").hidden = false;
     $("info").textContent = "Attestation data found: ready to submit.";
   } else {
