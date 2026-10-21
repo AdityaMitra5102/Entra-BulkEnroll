@@ -70,6 +70,9 @@
   /* machine-generated fields: fixed width, one line, clipped with "..." (display only) */
   .mono { max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  /* detailed_status: wraps, but long API responses scroll inside the cell instead of making the row huge */
+  .detail { max-height: 6em; overflow: auto; font-size: .85em; }
+
   /* Security Key dropdowns */
   td select, th select { width: 100%; font: inherit; }
 
@@ -349,6 +352,7 @@ function setBusy(on) {
 }
 
 const isMachineCol = h => MACHINE_COLS.includes(norm(h));
+const isDetailCol = h => norm(h) === "detailedstatus";
 
 // ---------- Security Key column (process mode only) ----------
 const KEY_COL = "Security Key";
@@ -373,9 +377,9 @@ function keySelect(value, isMaster) {
   return s;
 }
 
-// ---------- Debug mode: machine fields are hidden on screen unless it is on ----------
+// ---------- Debug mode: machine fields and detailed_status are hidden on screen unless it is on ----------
 // Only the display is affected: the columns stay in the data and in the downloaded/sent CSVs.
-const HIDDEN_COLS = ["challenge", "userid", "rpid", "credentialid", "clientdatajson", "attestationobject"];
+const HIDDEN_COLS = ["challenge", "userid", "rpid", "credentialid", "clientdatajson", "attestationobject", "detailedstatus"];
 let debug = false;
 const visibleHeaders = () => debug ? headers : headers.filter(h => !HIDDEN_COLS.includes(norm(h)));
 $("debugToggle").onchange = e => { debug = e.target.checked; renderTable(); };
@@ -433,6 +437,10 @@ function renderTable() {
         el = document.createElement("div");
         el.className = "mono";
         el.title = v;
+        td.appendChild(el);
+      } else if (isDetailCol(h)) {      // long API responses scroll inside the cell
+        el = document.createElement("div");
+        el.className = "detail";
         td.appendChild(el);
       }
       el.textContent = v;
@@ -618,6 +626,7 @@ $("restartBtn").onclick = () => {
 };
 
 // ---------- Process (creation options) ----------
+// status = Success / Failed; detailed_status = the API response or the error
 $("processBtn").onclick = async () => {
   if (!lockAndFilter()) return;
   $("processBtn").disabled = true;
@@ -625,34 +634,39 @@ $("processBtn").onclick = async () => {
   const pCol = findPrincipalCol();
   const cCol = ensureCol("challenge");   // created here, so it only appears once processing starts
   const uCol = ensureCol("user_id");
-  const sCol = ensureCol("status");
   const rCol = ensureCol("rp_id");
   const tCol = ensureCol("timestamp");
+  const xCol = ensureCol("detailed_status");
+  const sCol = ensureCol("status");
 
   for (let i = 0; i < rows.length; i++) {
     setProgress(i, rows.length);
     const r = rows[i];
     r[rCol] = RP_ID;
     const upn = (r[pCol] || "").trim();
-    if (!upn) { r[sCol] = "Error: empty user principal"; renderTable(); continue; }
-    if (upn.toLowerCase() === myUpn) {
-      r[sCol] = "Skipped: signed-in user (creationOptions doesn't support self-service)";
-      renderTable();
-      continue;
+    if (!upn) {
+      r[sCol] = "Failed"; r[xCol] = "Error: empty user principal";
+      renderTable(); continue;
     }
-    r[sCol] = "Working...";
+    if (upn.toLowerCase() === myUpn) {
+      r[sCol] = "Failed"; r[xCol] = "Skipped: signed-in user (creationOptions doesn't support self-service)";
+      renderTable(); continue;
+    }
+    r[sCol] = "Working..."; r[xCol] = "";
     renderTable();
     try {
       const res = await graph("GET",
         `/users/${encodeURIComponent(upn)}/authentication/fido2Methods/creationOptions(challengeTimeoutInMinutes=${TIMEOUT_MINUTES})`);
       const pk = res.publicKey || res;
-      if (!pk.challenge || !pk.user || !pk.user.id) throw new Error("Unexpected response shape");
+      if (!pk.challenge || !pk.user || !pk.user.id) throw new Error("Unexpected response shape: " + JSON.stringify(res));
       r[cCol] = pk.challenge;
       r[uCol] = pk.user.id;
       r[tCol] = nowWithTz();
-      r[sCol] = "Creation options OK";
+      r[sCol] = "Success";
+      r[xCol] = JSON.stringify(res);
     } catch (e) {
-      r[sCol] = "Error: " + e.message;
+      r[sCol] = "Failed";
+      r[xCol] = e.message;
     }
     renderTable();
   }
@@ -671,6 +685,7 @@ function buildCredential(r, idCol, cdCol, aoCol) {
   return { id, response: { clientDataJSON: cd, attestationObject: ao } };
 }
 
+// status = Success / Failed; detailed_status = the API response or the error
 $("submitBtn").onclick = async () => {
   if (!lockAndFilter()) return;
   $("submitBtn").disabled = true;
@@ -681,24 +696,29 @@ $("submitBtn").onclick = async () => {
   const cdCol = findCol("clientDataJson");
   const aoCol = findCol("attestationObject");
   const dCol = findCol("display_name");
+  const xCol = ensureCol("detailed_status");
   const sCol = ensureCol("status");
 
   for (let i = 0; i < rows.length; i++) {
     setProgress(i, rows.length);
     const r = rows[i];
     const upn = (r[pCol] || "").trim();
-    if (!upn) { r[sCol] = "Failed"; renderTable(); continue; }
-    r[sCol] = "Working...";
+    if (!upn) {
+      r[sCol] = "Failed"; r[xCol] = "Error: empty user principal";
+      renderTable(); continue;
+    }
+    r[sCol] = "Working..."; r[xCol] = "";
     renderTable();
     try {
       const displayName = (dCol && (r[dCol] || "").trim()) || "FIDO Key";
-      await graph("POST",
+      const res = await graph("POST",
         `/users/${encodeURIComponent(upn)}/authentication/fido2Methods`,
         { displayName, publicKeyCredential: buildCredential(r, idCol, cdCol, aoCol) });
       r[sCol] = "Success";
+      r[xCol] = res ? JSON.stringify(res) : "OK (no response body)";
     } catch (e) {
-      console.error("Submit failed for " + upn + ": " + e.message);   // details only in the browser console
       r[sCol] = "Failed";
+      r[xCol] = e.message;
     }
     renderTable();
   }
@@ -706,10 +726,10 @@ $("submitBtn").onclick = async () => {
   setBusy(false);
   $("restartBtn").disabled = false;
   $("submitBtn").disabled = false;
-  // Send to Nitrokey is not offered in step 2
+  // Stage 2 pushes to Entra, so there is nothing to send or save here
 };
 
-// ---------- Send to Nitrokey (cloud push) / local download ----------
+// ---------- Send to Nitrokey (stage 1 only: cloud push, local copy as fallback to email) ----------
 function downloadLocal(list = rows) {
   const blob = new Blob([toCSV(list)], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
