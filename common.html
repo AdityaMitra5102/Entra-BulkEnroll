@@ -108,6 +108,7 @@
   <button id="entraBtn">Get from Entra</button>
   <button id="uploadBtn">Upload CSV</button>
   <button id="processBtn" hidden>Process List</button>
+  <button id="restartBtn" hidden>Start from beginning</button>
   <button id="submitBtn" hidden>Submit List</button>
   <button id="downloadBtn" hidden>Send to Nitrokey</button>
   <div id="progressDiv" hidden>
@@ -119,6 +120,16 @@
 </div>
 
 <script>
+// Shows any script error at the top of the page (handy for diagnosing a broken page; safe to delete)
+window.addEventListener("error", e => {
+  const d = document.getElementById("errorDiv");
+  if (d) d.textContent = "Script error: " + e.message + (e.lineno ? " (line " + e.lineno + ")" : "");
+});
+window.addEventListener("unhandledrejection", e => {
+  const d = document.getElementById("errorDiv");
+  if (d) d.textContent = "Unhandled error: " + (e.reason && e.reason.message ? e.reason.message : e.reason);
+});
+
 const CLIENT_ID = "7eb1c1fe-b350-4e3b-983b-c8a3b168583e";
 // Work/school accounts of any tenant: "organizations".
 // Personal account that owns a test tenant: replace "organizations" with the tenant ID or domain.
@@ -471,7 +482,7 @@ $("entraBtn").onclick = async () => {
   $("entraBtn").disabled = true;
   $("errorDiv").textContent = "";
   locked = false;
-  ["processBtn", "submitBtn", "downloadBtn", "progressDiv"].forEach(id => $(id).hidden = true);
+  ["processBtn", "submitBtn", "downloadBtn", "progressDiv", "restartBtn"].forEach(id => $(id).hidden = true);
   try {
     const addr = ["streetAddress", "city", "state", "postalCode", "country"];
     let url = "/users?$top=999&$select=" + ["userPrincipalName", "displayName", ...addr].join(",");
@@ -524,7 +535,7 @@ $("csvFile").onchange = async e => {
 function loadCsvText(text) {
   $("errorDiv").textContent = "";
   locked = false;
-  ["processBtn", "submitBtn", "downloadBtn", "progressDiv"].forEach(id => $(id).hidden = true);
+  ["processBtn", "submitBtn", "downloadBtn", "progressDiv", "restartBtn"].forEach(id => $(id).hidden = true);
   ["entraBtn", "uploadBtn"].forEach(id => $(id).hidden = false);
 
   const data = parseCSV(text);
@@ -556,6 +567,7 @@ function loadCsvText(text) {
     mode = "submit";
     ["entraBtn", "uploadBtn"].forEach(id => $(id).hidden = true);   // step 2: only Submit List is offered
     $("submitBtn").hidden = false;
+    $("restartBtn").hidden = false;
     $("info").textContent = "Attestation data found: ready to submit.";
   } else {
     mode = "process";
@@ -576,6 +588,16 @@ function lockAndFilter() {
   renderTable();
   return true;
 }
+
+// ---------- Start from beginning (step 2 -> step 1) ----------
+$("restartBtn").onclick = () => {
+  headers = []; rows = []; mode = null; locked = false;
+  $("csvTable").innerHTML = "";
+  ["processBtn", "submitBtn", "downloadBtn", "progressDiv", "restartBtn"].forEach(id => $(id).hidden = true);
+  ["entraBtn", "uploadBtn"].forEach(id => $(id).hidden = false);
+  $("errorDiv").textContent = "";
+  $("info").textContent = "Upload a CSV or get users from Entra.";
+};
 
 // ---------- Process (creation options) ----------
 $("processBtn").onclick = async () => {
@@ -635,6 +657,7 @@ $("submitBtn").onclick = async () => {
   if (!lockAndFilter()) return;
   $("submitBtn").disabled = true;
   setBusy(true);
+  $("restartBtn").disabled = true;   // don't allow a reset in the middle of the run
   const pCol = findPrincipalCol();
   const idCol = findCol("credential_id");
   const cdCol = findCol("clientDataJson");
@@ -662,6 +685,7 @@ $("submitBtn").onclick = async () => {
   }
   setProgress(rows.length, rows.length);
   setBusy(false);
+  $("restartBtn").disabled = false;
   $("submitBtn").disabled = false;
   $("downloadBtn").hidden = false;
 };
