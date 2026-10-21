@@ -108,7 +108,6 @@
   <button id="entraBtn">Get from Entra</button>
   <button id="uploadBtn">Upload CSV</button>
   <button id="processBtn" hidden>Process List</button>
-  <button id="restartBtn" hidden>Start from beginning</button>
   <button id="submitBtn" hidden>Submit List</button>
   <button id="downloadBtn" hidden>Send to Nitrokey</button>
   <div id="progressDiv" hidden>
@@ -422,4 +421,294 @@ const SHARE_HOSTS = ["cloud.nitrokey.com", "nkproxy.adityaarghya0.workers.dev"];
 // Accepts a bare share ID or a share link. Returns the ID, or null if the link is from another host.
 function parseShareId(input) {
   input = input.trim();
-  if (!input.includes("/")) return input;   //
+  if (!input.includes("/")) return input;   // bare ID, used as is
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? input : "https://" + input);
+    if (!SHARE_HOSTS.includes(u.hostname.toLowerCase())) return null;
+    const parts = u.pathname.split("/").filter(Boolean);
+    return parts.length ? decodeURIComponent(parts[parts.length - 1]) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------- Cloud (Nextcloud public share via proxy, WebDAV, anonymous) ----------
+$("shareBtn").onclick = async () => {
+  shareId = parseShareId($("shareId").value);
+  if (!shareId) { $("errorDiv").textContent = "Enter a share ID or a link from cloud.nitrokey.com"; return; }
+  $("shareLabel").textContent = "Share: " + shareId;
+  $("shareLabel").title = shareId;
+  $("errorDiv").textContent = "";
+  $("shareBtn").disabled = true;
+  $("shareInfo").textContent = "Looking for output.csv...";
+  setBusy(true);
+
+  let text = null, problem = "";
+  try {
+    // ?t=<now> makes every request unique so a stale cached copy is never used
+    const res = await fetch(CLOUD + encodeURIComponent(shareId) + "/output.csv?t=" + Date.now());
+    if (res.ok) text = await res.text();
+    else if (res.status !== 404) problem = "Could not fetch output.csv: HTTP " + res.status + ". Continuing without it.";
+  } catch (e) {
+    problem = "Could not reach the cloud (" + e.message + "). Continuing without output.csv.";
+  }
+
+  $("shareDiv").hidden = true;
+  $("appDiv").hidden = false;
+  $("info").textContent = "No output.csv on the cloud: upload a CSV or get users from Entra.";
+  if (text !== null) {
+    loadCsvText(text);
+    if (headers.length) $("info").textContent += " (output.csv loaded from the cloud)";
+  }
+  if (problem) $("errorDiv").textContent = problem;
+  setBusy(false);
+};
+$("shareId").addEventListener("keydown", e => { if (e.key === "Enter") $("shareBtn").click(); });
+
+// ---------- Get users from Entra ----------
+$("entraBtn").onclick = async () => {
+  setBusy(true);
+  $("entraBtn").disabled = true;
+  $("errorDiv").textContent = "";
+  locked = false;
+  ["processBtn", "submitBtn", "downloadBtn", "progressDiv"].forEach(id => $(id).hidden = true);
+  try {
+    const addr = ["streetAddress", "city", "state", "postalCode", "country"];
+    let url = "/users?$top=999&$select=" + ["userPrincipalName", "displayName", ...addr].join(",");
+    const list = [];
+    while (url) {
+      $("info").textContent = "Loading users... " + list.length;
+      const res = await graph("GET", url);
+      list.push(...(res.value || []));
+      url = res["@odata.nextLink"] || null;
+    }
+    if (!list.length) throw new Error("No users returned");
+
+    headers = ["user principal", "name", ...addr, "shipping address"];
+    rows = list.map(u => {
+      const o = {};
+      o[SEL] = true;
+      o["user principal"] = u.userPrincipalName || "";
+      o["name"] = u.displayName || "";
+      addr.forEach(f => o[f] = u[f] || "");
+      o["shipping address"] = addr.map(f => o[f]).filter(Boolean).join(", ");
+      return o;
+    });
+    // hide columns that are empty for every user (user principal and shipping address always stay)
+    headers = headers.filter(h => h === "user principal" || h === "shipping address" || rows.some(r => r[h]));
+
+    mode = "process";
+    ensureKeyCol();
+    $("processBtn").hidden = false;
+    $("info").textContent = list.length + " users loaded from Entra: ready to generate creation options.";
+    renderTable();
+  } catch (e) {
+    $("errorDiv").textContent = "Could not load users: " + e.message;
+    $("info").textContent = "";
+  }
+  $("entraBtn").disabled = false;
+  setBusy(false);
+};
+
+// ---------- Upload CSV ----------
+$("uploadBtn").onclick = () => $("csvFile").click();
+
+$("csvFile").onchange = async e => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  loadCsvText(await file.text());
+};
+
+// Shared by the file picker and the cloud download
+function loadCsvText(text) {
+  $("errorDiv").textContent = "";
+  locked = false;
+  ["processBtn", "submitBtn", "downloadBtn", "progressDiv"].forEach(id => $(id).hidden = true);
+  ["entraBtn", "uploadBtn"].forEach(id => $(id).hidden = false);
+
+  const data = parseCSV(text);
+  if (data.length < 1) { $("errorDiv").textContent = "Empty CSV"; return; }
+
+  headers = data[0].map(h => h.trim());
+  rows = data.slice(1).map(cells => {
+    const o = {};
+    o[SEL] = true;
+    headers.forEach((h, i) => o[h] = cells[i] !== undefined ? cells[i] : "");
+    return o;
+  });
+
+  if (!findPrincipalCol()) {
+    $("errorDiv").textContent = "CSV must contain a 'user principal' column";
+    headers = []; rows = []; renderTable(); return;
+  }
+  ensureCol("shipping address");
+
+  const ao = findCol("attestationObject");
+  const hasAttestation = ao && rows.some(r => (r[ao] || "").trim() !== "");
+
+  if (hasAttestation && (!findCol("credential_id") || !findCol("clientDataJson"))) {
+    $("errorDiv").textContent = "attestationObject is present, so credential_id and clientDataJson columns are required";
+    headers = []; rows = []; renderTable(); return;
+  }
+
+  if (hasAttestation) {
+    mode = "submit";
+    ["entraBtn", "uploadBtn"].forEach(id => $(id).hidden = true);   // step 2: only Submit List is offered
+    $("submitBtn").hidden = false;
+    $("info").textContent = "Attestation data found: ready to submit.";
+  } else {
+    mode = "process";
+    ensureKeyCol();
+    $("processBtn").hidden = false;
+    $("info").textContent = "No attestation data: ready to generate creation options.";
+  }
+  renderTable();
+}
+
+// Drops unchecked rows and makes the table read-only (except shipping address)
+function lockAndFilter() {
+  const kept = rows.filter(r => r[SEL]);
+  if (!kept.length) { $("errorDiv").textContent = "Select at least one row"; return false; }
+  $("errorDiv").textContent = "";
+  rows = kept;
+  locked = true;
+  renderTable();
+  return true;
+}
+
+// ---------- Process (creation options) ----------
+$("processBtn").onclick = async () => {
+  if (!lockAndFilter()) return;
+  $("processBtn").disabled = true;
+  setBusy(true);
+  const pCol = findPrincipalCol();
+  const cCol = ensureCol("challenge");   // created here, so it only appears once processing starts
+  const uCol = ensureCol("user_id");
+  const sCol = ensureCol("status");
+  const rCol = ensureCol("rp_id");
+  const tCol = ensureCol("timestamp");
+
+  for (let i = 0; i < rows.length; i++) {
+    setProgress(i, rows.length);
+    const r = rows[i];
+    r[rCol] = RP_ID;
+    const upn = (r[pCol] || "").trim();
+    if (!upn) { r[sCol] = "Error: empty user principal"; renderTable(); continue; }
+    if (upn.toLowerCase() === myUpn) {
+      r[sCol] = "Skipped: signed-in user (creationOptions doesn't support self-service)";
+      renderTable();
+      continue;
+    }
+    r[sCol] = "Working...";
+    renderTable();
+    try {
+      const res = await graph("GET",
+        `/users/${encodeURIComponent(upn)}/authentication/fido2Methods/creationOptions(challengeTimeoutInMinutes=${TIMEOUT_MINUTES})`);
+      const pk = res.publicKey || res;
+      if (!pk.challenge || !pk.user || !pk.user.id) throw new Error("Unexpected response shape");
+      r[cCol] = pk.challenge;
+      r[uCol] = pk.user.id;
+      r[tCol] = nowWithTz();
+      r[sCol] = "Creation options OK";
+    } catch (e) {
+      r[sCol] = "Error: " + e.message;
+    }
+    renderTable();
+  }
+  setProgress(rows.length, rows.length);
+  setBusy(false);
+  $("processBtn").disabled = false;
+  $("downloadBtn").hidden = false;
+};
+
+// ---------- Submit (register keys) ----------
+function buildCredential(r, idCol, cdCol, aoCol) {
+  const id = (r[idCol] || "").trim();
+  const cd = (r[cdCol] || "").trim();
+  const ao = (r[aoCol] || "").trim();
+  if (!id || !cd || !ao) throw new Error("credential_id, clientDataJson and attestationObject are all required");
+  return { id, response: { clientDataJSON: cd, attestationObject: ao } };
+}
+
+$("submitBtn").onclick = async () => {
+  if (!lockAndFilter()) return;
+  $("submitBtn").disabled = true;
+  setBusy(true);
+  const pCol = findPrincipalCol();
+  const idCol = findCol("credential_id");
+  const cdCol = findCol("clientDataJson");
+  const aoCol = findCol("attestationObject");
+  const dCol = findCol("display_name");
+  const sCol = ensureCol("status");
+
+  for (let i = 0; i < rows.length; i++) {
+    setProgress(i, rows.length);
+    const r = rows[i];
+    const upn = (r[pCol] || "").trim();
+    if (!upn) { r[sCol] = "Skipped: missing principal"; renderTable(); continue; }
+    r[sCol] = "Working...";
+    renderTable();
+    try {
+      const displayName = (dCol && (r[dCol] || "").trim()) || "FIDO Key";
+      const res = await graph("POST",
+        `/users/${encodeURIComponent(upn)}/authentication/fido2Methods`,
+        { displayName, publicKeyCredential: buildCredential(r, idCol, cdCol, aoCol) });
+      r[sCol] = "Success" + (res && res.id ? " (method id " + res.id + ")" : "");
+    } catch (e) {
+      r[sCol] = "Error: " + e.message;
+    }
+    renderTable();
+  }
+  setProgress(rows.length, rows.length);
+  setBusy(false);
+  $("submitBtn").disabled = false;
+  $("downloadBtn").hidden = false;
+};
+
+// ---------- Send to Nitrokey (cloud push) / local download ----------
+function downloadLocal(list = rows) {
+  const blob = new Blob([toCSV(list)], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (mode === "submit" ? "submitted" : "processed") + ".csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$("downloadBtn").onclick = async () => {
+  if (mode === "submit") { downloadLocal(); return; }   // submit results are only saved locally
+
+  // only rows that got a challenge are sent (skipped and failed rows are left out)
+  const cCol = findCol("challenge");
+  const send = rows.filter(r => cCol && (r[cCol] || "").trim() !== "");
+  const dropped = rows.length - send.length;
+  if (!send.length) {
+    $("errorDiv").textContent = "Nothing to send: no row has a challenge.";
+    return;
+  }
+
+  $("downloadBtn").disabled = true;
+  setBusy(true);
+  try {
+    const res = await fetch(CLOUD + encodeURIComponent(shareId) + "/processed.csv", {
+      method: "PUT",
+      headers: { "Content-Type": "text/csv;charset=utf-8" },
+      body: toCSV(send)
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    $("errorDiv").textContent = "";
+    $("info").textContent = "processed.csv uploaded to the cloud: " + send.length + " rows sent" +
+      (dropped ? ", " + dropped + " left out (no challenge)." : ".");
+  } catch (e) {
+    $("errorDiv").textContent = "Upload failed (" + e.message + "). Saved a local copy instead.";
+    downloadLocal(send);
+  }
+  setBusy(false);
+  $("downloadBtn").disabled = false;
+};
+
+init();
+</script>
+</body>
+</html>
