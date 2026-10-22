@@ -175,6 +175,7 @@ def main():
     aocol = find_col(out_headers, "attestationObject")
     scol = find_col(out_headers, "status")
     namecol = find_col(out_headers, "name")
+    keymodelcol = find_col(out_headers, "Security Key")
 
     out_rows = []
     total = len(rows)
@@ -187,12 +188,15 @@ def main():
             user_id = (row[ucol] or "").strip()
             rp_id = (row[rcol] or "").strip()
             passkey_name = (row[namecol] or upn).strip()
+            key_model = (row[keymodelcol] or "Nitrokey 3A NFC (Default)").strip()
 
             print(f"\n[{i}/{total}] User principal: {upn}")
             if not (upn and challenge and user_id and rp_id):
                 out[scol] = "Skipped: missing principal, challenge, user_id or rp_id"
                 print(out[scol])
                 continue
+                
+            input(f"\nConnect a the {key_model}, then press Enter to continue...")
 
             try:
                 client = get_client()
@@ -208,14 +212,12 @@ def main():
                 out[idcol] = result["credential_id"]
                 out[cdcol] = result["clientDataJson"]
                 out[aocol] = result["attestationObject"]
-                out[scol] = "Credential created"
+                out[scol] = "Nitrokey Enrolled. Waiting to submit."
                 print("OK")
             except Exception as e:
                 out[scol] = f"Error: {e}"
                 print(out[scol])
 
-            if i < total:
-                input("\nChange the security key, then press Enter to continue...")
     except KeyboardInterrupt:
         print("\nInterrupted, writing what has been collected so far.")
     finally:
