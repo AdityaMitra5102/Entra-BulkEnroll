@@ -596,7 +596,7 @@ $("entraBtn").onclick = async () => {
     headers = ["user principal", "name", ...addr, "shipping address"];
     rows = list.map(u => {
       const o = {};
-      o[SEL] = true;
+      o[SEL] = false;
       o["user principal"] = u.userPrincipalName || "";
       o["name"] = u.displayName || "";
       addr.forEach(f => o[f] = u[f] || "");
@@ -642,7 +642,7 @@ function loadCsvText(text) {
   headers = data[0].map(h => h.trim());
   rows = data.slice(1).map(cells => {
     const o = {};
-    o[SEL] = true;
+    o[SEL] = false;
     headers.forEach((h, i) => o[h] = cells[i] !== undefined ? cells[i] : "");
     return o;
   });
@@ -746,6 +746,7 @@ $("processBtn").onclick = async () => {
   setBusy(false);
   $("processBtn").disabled = false;
   $("downloadBtn").hidden = false;
+  $("processBtn").hidden = true;
 };
 
 // ---------- Submit (register keys) ----------
