@@ -119,7 +119,7 @@
 
 <div id="appDiv" hidden>
   <input type="file" id="csvFile" accept=".csv" hidden>
-  <button id="entraBtn">Get from Entra</button>
+  <button id="entraBtn">Fetch user list</button>
   <button id="uploadBtn">Upload CSV</button>
   <button id="processBtn" hidden>Process List</button>
   <button id="restartBtn" hidden>Start from beginning</button>
@@ -356,7 +356,7 @@ const isDetailCol = h => norm(h) === "detailedstatus";
 
 // ---------- Security Key column (process mode only) ----------
 const KEY_COL = "Security Key";
-const KEY_OPTIONS = ["Nitrokey 3A", "Nitrokey 3C", "Nitrokey 3A Mini", "Nitrokey Passkey"];
+const KEY_OPTIONS = ["Nitrokey 3A NFC", "Nitrokey 3C NFC", "Nitrokey 3A Mini", "Nitrokey Passkey"];
 const KEY_DEFAULT = KEY_OPTIONS[0];
 const isKeyCol = h => norm(h) === "securitykey";
 
