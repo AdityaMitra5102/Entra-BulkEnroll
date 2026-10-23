@@ -176,6 +176,7 @@ def main():
     scol = find_col(out_headers, "status")
     namecol = find_col(out_headers, "name")
     keymodelcol = find_col(out_headers, "Security Key")
+    addresscol = find_col(out_headers, "shipping address")
 
     out_rows = []
     total = len(rows)
@@ -189,6 +190,7 @@ def main():
             rp_id = (row[rcol] or "").strip()
             passkey_name = (row[namecol] or upn).strip()
             key_model = (row[keymodelcol] or "Nitrokey 3A NFC (Default)").strip()
+            addr = (row[addresscol] or "").strip()
 
             print(f"\n[{i}/{total}] User principal: {upn}")
             if not (upn and challenge and user_id and rp_id):
@@ -214,6 +216,9 @@ def main():
                 out[aocol] = result["attestationObject"]
                 out[scol] = "Nitrokey Enrolled. Waiting to submit."
                 print("OK")
+                print("Key enrolled.")
+                if addr:
+                    print(f"Ship to {passkey_name}\n{addr}\n")
             except Exception as e:
                 out[scol] = f"Error: {e}"
                 print(out[scol])
